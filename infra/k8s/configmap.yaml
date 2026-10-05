@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: resumeforge-config
+data:
+  NODE_ENV: production
+  PORT: "4000"
+  APP_URL: https://resumeforge.example.com
+  TRUST_PROXY: "1"
+  AI_BASE_URL: https://api.openai.com/v1
+  AI_MODEL: gpt-4.1-mini
+  STORAGE_REGION: us-east-1
+  STORAGE_BUCKET: resumeforge
+  SMTP_PORT: "587"
+  EMAIL_FROM: ResumeForge <hello@example.com>
+  CHROMIUM_PATH: /usr/bin/chromium
+  CHROMIUM_NO_SANDBOX: "true"
+  ALLOW_INSECURE_LOCAL_COOKIES: "false"
+  XDG_CONFIG_HOME: /tmp/chromium-config
+  XDG_CACHE_HOME: /tmp/chromium-cache

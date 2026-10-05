@@ -1,0 +1,129 @@
+name: resumeforge
+
+x-backend-env: &backend-env
+  NODE_ENV: production
+  PORT: 4000
+  APP_URL: https://${DOMAIN:?Set DOMAIN in .env.production}
+  DATABASE_URL: postgresql://resumeforge:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}@postgres:5432/resumeforge
+  REDIS_URL: redis://redis:6379
+  SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET in .env.production}
+  TRUST_PROXY: "1"
+  ALLOW_INSECURE_LOCAL_COOKIES: "false"
+  CHROMIUM_NO_SANDBOX: "true"
+  SMTP_HOST: ${SMTP_HOST:?Set your real SMTP host in .env.production}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_USER: ${SMTP_USER:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  EMAIL_FROM: ${EMAIL_FROM:?Set EMAIL_FROM in .env.production}
+  AI_API_KEY: ${AI_API_KEY:-}
+  AI_BASE_URL: ${AI_BASE_URL:-https://api.openai.com/v1}
+  AI_MODEL: ${AI_MODEL:-gpt-4.1-mini}
+  GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+  GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+  STORAGE_ENDPOINT: http://minio:9000
+  STORAGE_BUCKET: resumeforge
+  STORAGE_REGION: us-east-1
+  STORAGE_ACCESS_KEY: ${STORAGE_ACCESS_KEY:?Set STORAGE_ACCESS_KEY in .env.production}
+  STORAGE_SECRET_KEY: ${STORAGE_SECRET_KEY:?Set STORAGE_SECRET_KEY in .env.production}
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in .env.production}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in .env.production}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      frontend: {condition: service_started}
+      backend: {condition: service_healthy}
+    logging: *logging
+    restart: unless-stopped
+  frontend:
+    build: {context: ., target: frontend}
+    depends_on: {backend: {condition: service_healthy}}
+    logging: *logging
+    restart: unless-stopped
+  backend:
+    build: {context: ., target: backend}
+    environment: *backend-env
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      storage-init: {condition: service_completed_successfully}
+    init: true
+    shm_size: 512mb
+    logging: *logging
+    restart: unless-stopped
+  worker:
+    build: {context: ., target: backend}
+    command: ["node", "dist/server/worker.js"]
+    environment: *backend-env
+    healthcheck: {disable: true}
+    depends_on: {backend: {condition: service_healthy}}
+    init: true
+    logging: *logging
+    restart: unless-stopped
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: resumeforge
+      POSTGRES_USER: resumeforge
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}
+    volumes: ["postgres-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U resumeforge -d resumeforge"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    logging: *logging
+    restart: unless-stopped
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: ["redis-data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    logging: *logging
+    restart: unless-stopped
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: ${STORAGE_ACCESS_KEY:?Set STORAGE_ACCESS_KEY in .env.production}
+      MINIO_ROOT_PASSWORD: ${STORAGE_SECRET_KEY:?Set STORAGE_SECRET_KEY in .env.production}
+    volumes: ["object-data:/data"]
+    logging: *logging
+    restart: unless-stopped
+  storage-init:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    depends_on: [minio]
+    environment:
+      MINIO_ROOT_USER: ${STORAGE_ACCESS_KEY:?Set STORAGE_ACCESS_KEY in .env.production}
+      MINIO_ROOT_PASSWORD: ${STORAGE_SECRET_KEY:?Set STORAGE_SECRET_KEY in .env.production}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - 'until mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; do sleep 2; done; mc mb --ignore-existing local/resumeforge'
+    logging: *logging
+
+volumes:
+  postgres-data:
+  redis-data:
+  object-data:
+  caddy-data:
+  caddy-config:

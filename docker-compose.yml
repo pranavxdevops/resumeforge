@@ -1,0 +1,93 @@
+name: resumeforge
+x-backend-env: &backend-env
+  NODE_ENV: production
+  PORT: 4000
+  APP_URL: ${APP_URL:-http://localhost:8080}
+  DATABASE_URL: postgresql://resumeforge:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/resumeforge
+  REDIS_URL: redis://redis:6379
+  SESSION_SECRET: ${SESSION_SECRET:?Set a random SESSION_SECRET in .env}
+  TRUST_PROXY: "1"
+  # Chromium runs as the unprivileged node user inside a container.
+  CHROMIUM_NO_SANDBOX: "true"
+  AI_API_KEY: ${AI_API_KEY:-}
+  AI_BASE_URL: ${AI_BASE_URL:-https://api.openai.com/v1}
+  AI_MODEL: ${AI_MODEL:-gpt-4.1-mini}
+  SMTP_HOST: mailpit
+  SMTP_PORT: 1025
+  EMAIL_FROM: ${EMAIL_FROM:-ResumeForge <hello@resumeforge.local>}
+  STORAGE_ENDPOINT: http://minio:9000
+  STORAGE_BUCKET: resumeforge
+  STORAGE_REGION: us-east-1
+  STORAGE_ACCESS_KEY: ${STORAGE_ACCESS_KEY:?Set STORAGE_ACCESS_KEY in .env}
+  STORAGE_SECRET_KEY: ${STORAGE_SECRET_KEY:?Set STORAGE_SECRET_KEY in .env}
+services:
+  frontend:
+    build: {context: ., target: frontend}
+    ports: ["8080:8080"]
+    depends_on: {backend: {condition: service_healthy}}
+    restart: unless-stopped
+  backend:
+    build: {context: ., target: backend}
+    environment: *backend-env
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      storage-init: {condition: service_completed_successfully}
+    # Explicitly permit HTTP cookies only for local Compose; use false with TLS.
+    env_file: {path: .env, required: true}
+    init: true
+    shm_size: 512mb
+    restart: unless-stopped
+  worker:
+    build: {context: ., target: backend}
+    command: ["node", "dist/server/worker.js"]
+    environment: *backend-env
+    healthcheck: {disable: true}
+    depends_on:
+      backend: {condition: service_healthy}
+    restart: unless-stopped
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: resumeforge
+      POSTGRES_USER: resumeforge
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes: ["postgres-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U resumeforge -d resumeforge"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: ["redis-data:/data"]
+    healthcheck: {test: ["CMD", "redis-cli", "ping"], interval: 5s, timeout: 3s, retries: 10}
+    restart: unless-stopped
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: ${STORAGE_ACCESS_KEY:?Set STORAGE_ACCESS_KEY in .env}
+      MINIO_ROOT_PASSWORD: ${STORAGE_SECRET_KEY:?Set STORAGE_SECRET_KEY in .env}
+    volumes: ["object-data:/data"]
+    ports: ["127.0.0.1:9001:9001"]
+    restart: unless-stopped
+  storage-init:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    depends_on: [minio]
+    environment:
+      MINIO_ROOT_USER: ${STORAGE_ACCESS_KEY:?Set STORAGE_ACCESS_KEY in .env}
+      MINIO_ROOT_PASSWORD: ${STORAGE_SECRET_KEY:?Set STORAGE_SECRET_KEY in .env}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - 'until mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; do sleep 2; done; mc mb --ignore-existing local/resumeforge'
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports: ["127.0.0.1:8025:8025"]
+    restart: unless-stopped
+volumes:
+  postgres-data:
+  redis-data:
+  object-data:
